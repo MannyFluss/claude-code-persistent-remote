@@ -7,7 +7,7 @@ Run a persistent, remote-controlled Claude Code instance on your home server or 
 ```
 your-linux-user (/home/you)        claude-linux-user (/home/claude)
 ├── private data (locked down)     ├── Claude Code running in tmux
-├── Obsidian vault                 ├── persistent, remote-controlled
+├── your files                     ├── persistent, remote-controlled
 └── drops files → inbox/ ─────────►└── inbox/ (reads shared files)
                                         └── pushes outputs to GitHub
 ```
@@ -20,9 +20,9 @@ your-linux-user (/home/you)        claude-linux-user (/home/claude)
 
 ## Why a separate Linux user instead of Claude Code's built-in sandbox
 
-Claude Code has a sandbox feature, but running your setup *inside* the sandbox limits what Claude can do to help you set things up. More importantly, Linux user isolation is enforced by the OS kernel — no matter what Claude does, it physically cannot read files it doesn't have permission to read. It's a harder boundary.
+Claude Code has a sandbox feature, but it creates a circular problem: running your setup *inside* the sandbox limits what Claude can do to help you build the setup itself. More importantly, Linux user isolation is enforced by the OS kernel — no matter what Claude does, it physically cannot read files it doesn't have permission to read. It's a harder boundary than any application-level sandbox.
 
-The tradeoff: you give Claude freedom within its own home directory, and the OS enforces the wall between it and your private data.
+The tradeoff: Claude has full freedom within its own home directory, and the OS enforces the wall between it and your private data. You control exactly what crosses that wall.
 
 ## Prerequisites
 
@@ -34,7 +34,7 @@ The tradeoff: you give Claude freedom within its own home directory, and the OS 
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-code-persistent-remote
+git clone https://github.com/MannyFluss/claude-code-persistent-remote
 cd claude-code-persistent-remote
 chmod +x setup.sh
 ./setup.sh
@@ -48,7 +48,7 @@ Then follow the manual steps printed at the end.
 
 Creates a new user called `claude` with its own home directory at `/home/claude`. This user has no `sudo` access — it can only affect its own home directory.
 
-The script also sets your home directory to `chmod 700`, which means only you can read it. The claude user will get `Permission denied` if it ever tries to access `/home/you`.
+The script also sets your home directory to `chmod 700`, which means only you can read it. The claude user will get `Permission denied` if it ever tries to access your home.
 
 > **Note on Linux permissions:** `chmod 700` means owner=rwx, group=none, others=none. The three digits map to owner / group / everyone else. `7` = read+write+execute, `0` = no access.
 
@@ -89,20 +89,20 @@ The singleton check means you can run this script as many times as you want — 
 
 Installs and enables a systemd service (`claude-remote.service`) that calls the start script on boot.
 
-```
+```bash
 sudo systemctl start claude-remote    # start
 sudo systemctl stop claude-remote     # stop (kills the tmux session)
 sudo systemctl status claude-remote   # check if running
 sudo systemctl restart claude-remote  # restart
 ```
 
-The service uses `Type=oneshot` with `RemainAfterExit=yes`. This means the service "runs" the script (which starts tmux and exits), and systemd considers the service active as long as the tmux session is alive. This is the right pattern for services that launch a background process and exit.
+The service uses `Type=oneshot` with `RemainAfterExit=yes`. This means the service runs the script (which starts tmux and exits), and systemd considers the service active until the session is killed.
 
-> **Why not `Type=simple`?** Simple expects the ExecStart process to keep running. Our script starts tmux and exits — that would look like a crash to systemd. `oneshot` is for "do a thing and exit, I'll track state separately."
+> **Why not `Type=simple`?** Simple expects the ExecStart process to keep running. The start script launches tmux and exits — that would look like a crash to systemd. `oneshot` is for "do a thing and exit, I'll track state separately."
 
 ### Phase 6 — Install Claude Code
 
-Runs the official installer as the claude user. Uses the native installer (not npm — the npm package is deprecated).
+Runs the official installer as the claude user. Uses the native installer — the npm package is deprecated.
 
 ## Manual steps after running the script
 
@@ -117,7 +117,7 @@ claude
 
 **2. Accept workspace trust** — Claude Code asks once whether you trust the project directory:
 ```bash
-# Still as claude user, same directory
+# Still as the claude user
 claude
 # Accept the trust prompt, then /exit
 exit
@@ -138,13 +138,13 @@ sudo -u claude tmux attach -t claude
 
 ## Connecting from your phone
 
-Once the service is running, open the Claude app on your phone and look for the remote sessions option. You can also go to https://claude.ai/code in a browser.
+Once the service is running, open the Claude app on your phone and look for the remote sessions option. You can also connect at https://claude.ai/code in any browser.
 
-The session name is `Homelab` by default. You can change this in `/home/claude/start-claude.sh`.
+The session name is `Homelab` by default. Change it in `/home/claude/start-claude.sh`.
 
 ## The inbox: sharing files with Claude
 
-To share files from your private data with Claude, drop them into the inbox:
+Drop any file into the inbox to make it available to Claude:
 
 ```bash
 cp /path/to/file /home/claude/inbox/
@@ -152,28 +152,54 @@ cp /path/to/file /home/claude/inbox/
 
 Claude can read anything in `/home/claude/inbox/`. It cannot write back to your home directory.
 
-> **Planned extension:** An Obsidian sync script that scans your vault for files tagged `#claude` and automatically copies them to the inbox. See [TODO.md](TODO.md).
+## What you can build on top of this
+
+The inbox and Linux user isolation are a foundation. Here are examples of what you can layer on:
+
+### Selective note sharing (e.g. Obsidian)
+
+Write a script on your main user that scans your notes for a specific tag (e.g. `#claude`) and copies those files into the inbox. Claude gets access to exactly the notes you've chosen to share, nothing else. Run it manually or on a cron schedule.
+
+```bash
+# Example: copy all Obsidian notes tagged #claude to the inbox
+grep -rl '#claude' ~/obsidian-vault/ | xargs -I{} cp {} /home/claude/inbox/
+```
+
+### Claude pushes outputs back to you via GitHub
+
+Give the claude user a scoped GitHub Personal Access Token with access to specific repos. Claude can push work — code, summaries, generated files — to GitHub. You pull from your own account. This gives you a clean audit trail of everything Claude produces, reviewable before it touches your files.
+
+### Controlled data flows via scripts
+
+Write scripts on your main user that define exactly what crosses the boundary. The scripts run as you, with your permissions — Claude never gets to define its own access. For example:
+
+```bash
+# A script manny runs to share today's work context with Claude
+cp ~/projects/current-task.md /home/claude/inbox/
+cp ~/notes/relevant-background.md /home/claude/inbox/
+```
+
+This pattern keeps you in full control of what Claude sees and when.
 
 ## Troubleshooting
 
 **`sudo: claude: command not found` when trying to run claude as the claude user**
 
-The claude binary is installed in `/home/claude/.local/bin/` which isn't in root's PATH. Use:
+The claude binary is in `/home/claude/.local/bin/` which isn't in root's PATH. Switch fully to the claude user first:
 ```bash
-sudo -u claude /home/claude/.local/bin/claude
+sudo su - claude
 ```
-Or switch fully to the claude user first: `sudo su - claude`
 
 **`sh: Syntax error: "(" unexpected`**
 
-The install script requires bash, not sh. On Debian, `sh` is `dash` which doesn't support all bash syntax. Always use:
+The install script requires bash. On Debian, `sh` is `dash` which doesn't support all bash syntax. Use:
 ```bash
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
 **Service fails with exit code 203**
 
-The ExecStart binary can't be found or isn't executable. Check:
+The ExecStart binary can't be found or isn't executable. Test it directly:
 ```bash
 sudo -u claude /home/claude/start-claude.sh
 ```
@@ -184,10 +210,4 @@ You need to run `claude` interactively in the project directory at least once to
 
 **`sudo cat > /etc/...` doesn't work**
 
-`sudo` applies to `cat`, not to the shell redirection `>`. The redirect still runs as your user, which can't write to `/etc/`. Use `sudo tee` instead, or write to `/tmp/` first and then `sudo mv`.
-
-## Remaining setup (see TODO.md)
-
-- Obsidian sync script (tag `#claude` → auto-copy to inbox)
-- GitHub PAT for claude user (push outputs back to you)
-- Update CLAUDE.md with project-specific instructions
+`sudo` applies to `cat`, not to the shell redirection `>`. The redirect runs as your user, which can't write to `/etc/`. Use `sudo tee` instead, or write to `/tmp/` first and `sudo mv` into place.
